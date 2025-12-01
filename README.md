@@ -117,7 +117,6 @@ python -m src.evaluate_ffpp_resnet50
 
 ```
 TruthLens-Model/
-├── data/                            # 데이터셋
 ├── src/
 │   ├── extract_frames_ffpp.py       # 영상 → 프레임 추출
 │   ├── extract_faces_ffpp.py        # 프레임 → 얼굴 crop
