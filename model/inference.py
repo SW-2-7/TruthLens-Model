@@ -38,6 +38,7 @@ def load_model(
             f"Available: {list(MODEL_LIST.keys())}"
         )
 
+    # device 자동 선택
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -51,6 +52,7 @@ def load_model(
 
     # 가중치 로딩
     weights_path = cfg["weights"]
+    print(f"[INFO] Loading model: {weights_path}")
     state = torch.load(weights_path, map_location=device)
 
     # 만약 저장 형식이 {"state_dict": ...}라면 처리
@@ -63,18 +65,23 @@ def load_model(
     model.to(device)
     model.eval()
 
+    # config 정보에서 threshold / 모델 이름을 모델에 심어두기
+    setattr(model, "threshold", float(cfg.get("threshold", 0.5)))
+    setattr(model, "model_name", model_name)
+
     return model
+
 
 def predict_from_path(
     model: torch.nn.Module,
     image_path: str,
     device: Optional[str] = None,
-    threshold: float = 0.5,
+    threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     이미지 경로를 받아서 바로 예측하는 helper 함수.
     """
-    img = Image.open(image_path)
+    img = Image.open(image_path).convert("RGB")
     return predict_from_pil(
         model=model,
         img=img,
@@ -88,7 +95,7 @@ def predict_from_pil(
     model: torch.nn.Module,
     img: Image.Image,
     device: Optional[str] = None,
-    threshold: float = 0.5,
+    threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     PIL 이미지 한 장을 받아서 fake 확률과 label 리턴.
@@ -97,9 +104,17 @@ def predict_from_pil(
     - class 0: REAL
     - class 1: FAKE
     """
+    # device 처리
     if device is None:
         # 이미 model이 올라가 있는 device를 따라감
         device = next(model.parameters()).device
+    else:
+        device = torch.device(device)
+        model.to(device)
+
+    # threshold가 None이면 모델에 심어둔 값 사용, 없으면 0.5
+    if threshold is None:
+        threshold = float(getattr(model, "threshold", 0.5))
 
     x = preprocess_pil(img).to(device)  # (1, 3, H, W)
     logits = model(x)                   # (1, num_classes)
@@ -115,4 +130,5 @@ def predict_from_pil(
         "fake_probability": fake_prob,
         "real_probability": real_prob,
         "threshold": threshold,
+        "model_name": getattr(model, "model_name", None),
     }
