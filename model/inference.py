@@ -8,6 +8,7 @@ from PIL import Image
 from .config import MODEL_LIST, DEFAULT_MODEL_NAME
 from .model import create_model
 from .preprocess import preprocess_pil
+from .face_crop import detect_and_crop_face
 
 
 def _clean_state_dict(state: dict) -> dict:
@@ -132,3 +133,37 @@ def predict_from_pil(
         "threshold": threshold,
         "model_name": getattr(model, "model_name", None),
     }
+
+def predict_image_with_nonface(
+    model: torch.nn.Module,
+    image_path: str,
+    device: Optional[str] = None,
+    threshold: Optional[float] = None,
+) -> Dict[str, Any]:
+    img = Image.open(image_path).convert("RGB")
+
+    if device is None:
+        device = next(model.parameters()).device.type
+
+    if threshold is None:
+        threshold = float(getattr(model, "threshold", 0.5))
+
+    # 1) 얼굴 검출만 수행
+    cropped, bbox = detect_and_crop_face(img, device=device)
+
+    if cropped is None:
+        return {
+            "label": "NON_FACE",
+            "real_probability": None,
+            "fake_probability": None,
+            "threshold": threshold,
+            "bbox": None,
+            "mode": "no_face",
+            "model_name": getattr(model, "model_name", None),
+        }
+
+    # 2) 얼굴은 있으므로, 추론은 기존 full-image 기준으로 수행
+    base_result = predict_from_pil(model, img, device=device, threshold=threshold)
+    base_result["bbox"] = bbox
+    base_result["mode"] = "full_image"
+    return base_result
