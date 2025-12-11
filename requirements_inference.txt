@@ -1,6 +1,3 @@
 torch
 torchvision
-torchaudio
-facenet-pytorch
-numpy
 Pillow

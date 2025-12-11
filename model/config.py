@@ -30,13 +30,6 @@ MODEL_LIST: Dict[str, Dict[str, Any]] = {
         "num_classes": 2,
         "threshold": 0.5,   # 필요하면 나중에 모델별로 다르게 설정 가능
     },
-
-    "resnet50_celebdf_realboost": {
-        "weights": WEIGHTS_DIR / "celebdf_resnet50_realboost.pth",
-        "arch": "resnet50",
-        "num_classes": 2,
-        "threshold": 0.5,   # 필요하면 나중에 튜닝
-    },
 }
 
 # ✅ 기본으로 쓸 모델을 fine-tuned 으로 변경
