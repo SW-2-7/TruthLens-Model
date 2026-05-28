@@ -1,27 +1,34 @@
-# model/preprocess.py
+# preprocess.py
 
 from typing import Callable
-import torch
-from torchvision import transforms
 from PIL import Image
+from torchvision import transforms
+import torch
 
-_transform: Callable[[Image.Image], torch.Tensor] = transforms.Compose([
+# 🚀 ImageNet Pre-trained Normalization Parameters
+IMAGE_NET_TRANSFORM: Callable[[Image.Image], torch.Tensor] = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(
-        mean=[0.5, 0.5, 0.5],
-        std=[0.5, 0.5, 0.5],
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225],
     ),
 ])
 
+
 def preprocess_pil(img: Image.Image) -> torch.Tensor:
+    """Converts a PIL Image into a standardized model input tensor (1, 3, 224, 224).
+    
+    Args:
+        img (Image.Image): Input PIL Image.
+        
+    Returns:
+        torch.Tensor: Preprocessed and normalized tensor with a batch dimension.
     """
-    PIL 이미지를 받아서 모델 입력 tensor(1, 3, 224, 224)로 변환
-    """
-    # 혹시 RGBA 등 들어오면 RGB로 통일
+    # Force convert to RGB mode to eliminate alpha channels (RGBA) or grayscale issues
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    x = _transform(img)  # (3, 224, 224)
-    x = x.unsqueeze(0)   # (1, 3, 224, 224)
+    x = IMAGE_NET_TRANSFORM(img)  # Shape: (3, 224, 224)
+    x = x.unsqueeze(0)            # Shape: (1, 3, 224, 224)
     return x

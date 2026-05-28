@@ -1,3 +1,9 @@
+# 1. 딥러닝 가중치 및 데이터 (용량 및 보안)
+dataset/
+
+dataset/*
+!.gitkeep
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

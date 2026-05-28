@@ -1,134 +1,81 @@
-# model/inference.py
+# inference.py
 
-from typing import Dict, Any, Optional
-
-import torch
 from PIL import Image
+from facenet_pytorch import MTCNN
+from torchvision import transforms
+import torch
+import torch.nn as nn
 
-from .config import MODEL_LIST, DEFAULT_MODEL_NAME
-from .model import create_model
-from .preprocess import preprocess_pil
-
-
-def _clean_state_dict(state: dict) -> dict:
-    """
-    DataParallel로 학습해서 key 앞에 'module.' 붙어 있는 경우 제거
-    """
-    cleaned = {}
-    for k, v in state.items():
-        if k.startswith("module."):
-            k = k[len("module."):]
-        cleaned[k] = v
-    return cleaned
+from model.model import create_model
 
 
-def load_model(
-    model_name: str = DEFAULT_MODEL_NAME,
-    device: Optional[str] = None,
-) -> torch.nn.Module:
-    """
-    모델과 가중치를 로딩해서 eval 상태로 반환.
+class DeepfakeDetector:
+    def __init__(self, device: str = None):
+        """Initializes the detector with MTCNN and Ensemble Models."""
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"[System] Initializing Deepfake Detector on Device: {self.device}")
 
-    - model_name: config.MODEL_LIST 키 값
-    - device: "cpu", "cuda" 등. None이면 자동 선택.
-    """
-    if model_name not in MODEL_LIST:
-        raise ValueError(
-            f"Unknown model_name: {model_name}. "
-            f"Available: {list(MODEL_LIST.keys())}"
-        )
+        # 1. Face Extractor (MTCNN)
+        self.extractor = MTCNN(keep_all=False, post_process=False, device=self.device)
 
-    # device 자동 선택
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # 2. Production Ensemble Models (EfficientNet-B0 + MobileNet-V3)
+        self.model_eff = self._load_model("efficientnet_b0", "weights/dfdc_efficientnet_b0_focal.pth")
+        self.model_mob = self._load_model("mobilenet_v3", "weights/dfdc_mobilenet_v3_focal.pth")
+        
+        # 3. Input Image Preprocessing Pipelines
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        print("[System] All deep learning models loaded successfully! 🚀")
 
-    cfg = MODEL_LIST[model_name]
+    def _load_model(self, arch: str, path: str) -> nn.Module:
+        """Helper function to cleanly parse and load state_dict layers."""
+        model = create_model(arch=arch, num_classes=2)
+        state = torch.load(path, map_location=self.device, weights_only=True)
+        
+        if "state_dict" in state: 
+            state = state["state_dict"]
+            
+        # Strip DataParallel 'module.' prefixes if present
+        state = {k.replace("module.", ""): v for k, v in state.items()}
+        model.load_state_dict(state)
+        return model.to(self.device).eval()
 
-    # 아키텍처 생성
-    model = create_model(
-        arch=cfg["arch"],
-        num_classes=cfg["num_classes"],
-    )
+    @torch.no_grad()
+    def predict(self, image_path: str) -> dict:
+        """Executes full inference pipeline: Face Detection -> Ensemble Scoring."""
+        try:
+            # 1. Load Raw Image Target
+            img = Image.open(image_path).convert("RGB")
+            
+            # 2. Extract Facial Region of Interest (ROI)
+            face = self.extractor(img)
+            if face is None:
+                return {"status": "error", "message": "No face detected in the target image."}
+            
+            # 🌟 [Bug Fix] Ensure tensor is safely copied to CPU before converting to numpy
+            face_np = face.cpu().permute(1, 2, 0).numpy().astype('uint8')
+            face_img = Image.fromarray(face_np)
+            
+            # 3. Apply Transformations & Model Scaling
+            x = self.transform(face_img).unsqueeze(0).to(self.device)
 
-    # 가중치 로딩
-    weights_path = cfg["weights"]
-    print(f"[INFO] Loading model: {weights_path}")
-    state = torch.load(weights_path, map_location=device)
-
-    # 만약 저장 형식이 {"state_dict": ...}라면 처리
-    if isinstance(state, dict) and "state_dict" in state:
-        state = state["state_dict"]
-
-    state = _clean_state_dict(state)
-    model.load_state_dict(state)
-
-    model.to(device)
-    model.eval()
-
-    # config 정보에서 threshold / 모델 이름을 모델에 심어두기
-    setattr(model, "threshold", float(cfg.get("threshold", 0.5)))
-    setattr(model, "model_name", model_name)
-
-    return model
-
-
-def predict_from_path(
-    model: torch.nn.Module,
-    image_path: str,
-    device: Optional[str] = None,
-    threshold: Optional[float] = None,
-) -> Dict[str, Any]:
-    """
-    이미지 경로를 받아서 바로 예측하는 helper 함수.
-    """
-    img = Image.open(image_path).convert("RGB")
-    return predict_from_pil(
-        model=model,
-        img=img,
-        device=device,
-        threshold=threshold,
-    )
-
-
-@torch.no_grad()
-def predict_from_pil(
-    model: torch.nn.Module,
-    img: Image.Image,
-    device: Optional[str] = None,
-    threshold: Optional[float] = None,
-) -> Dict[str, Any]:
-    """
-    PIL 이미지 한 장을 받아서 fake 확률과 label 리턴.
-
-    클래스 인덱스 가정:
-    - class 0: REAL
-    - class 1: FAKE
-    """
-    # device 처리
-    if device is None:
-        # 이미 model이 올라가 있는 device를 따라감
-        device = next(model.parameters()).device
-    else:
-        device = torch.device(device)
-        model.to(device)
-
-    # threshold가 None이면 모델에 심어둔 값 사용, 없으면 0.5
-    if threshold is None:
-        threshold = float(getattr(model, "threshold", 0.5))
-
-    x = preprocess_pil(img).to(device)  # (1, 3, H, W)
-    logits = model(x)                   # (1, num_classes)
-
-    probs = torch.softmax(logits, dim=1)[0]
-    real_prob = float(probs[0].item())
-    fake_prob = float(probs[1].item())
-
-    label = "FAKE" if fake_prob >= threshold else "REAL"
-
-    return {
-        "label": label,
-        "fake_probability": fake_prob,
-        "real_probability": real_prob,
-        "threshold": threshold,
-        "model_name": getattr(model, "model_name", None),
-    }
+            # 4. Core Weighted Ensemble Logic (Weighted Ratio -> 8 : 2)
+            p_eff = torch.softmax(self.model_eff(x), dim=1)[0, 1].item()
+            p_mob = torch.softmax(self.model_mob(x), dim=1)[0, 1].item()
+            
+            final_prob = (0.8 * p_eff) + (0.2 * p_mob)
+            
+            return {
+                "status": "success",
+                "label": "FAKE" if final_prob >= 0.5 else "REAL",
+                "score": round(final_prob * 100, 2),
+                "details": {
+                    "efficientnet_b0": round(p_eff, 4), 
+                    "mobilenet_v3": round(p_mob, 4)
+                }
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}

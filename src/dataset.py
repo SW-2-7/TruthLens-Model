@@ -1,104 +1,81 @@
-# src/dataset.py
+# dataset.py
 
 from pathlib import Path
-import csv
-from typing import List, Tuple
-
+import os
+import pandas as pd
 from PIL import Image
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
-import sys
-
-# 모듈 경로 문제 방지를 위한 로직
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
-
-# paths.py에서 가져오되, 실패하면 현재 경로 기준으로 설정
-try:
-    from .paths import PROJECT_ROOT
-except ImportError:
-    pass
 
 
-class FaceDataset(Dataset):
-    """
-    범용 얼굴 이미지 데이터셋 클래스 (FF++, Celeb-DF 등 모두 지원)
-    CSV 파일에 정의된 경로를 통해 이미지와 레이블을 로드합니다.
-    """
-
-    def __init__(
-        self,
-        csv_path: str | Path,
-        train: bool = True,
-        load_mask: bool = False,
-    ):
-        self.csv_path = Path(csv_path)
+class DeepfakeDataset(Dataset):
+    def __init__(self, csv_file: str, train: bool = True):
+        """Custom Dataset for loading Deepfake facial image meta-files."""
+        self.data = pd.read_csv(csv_file)
         self.train = train
-        self.load_mask = load_mask
+        
+        # Standard ImageNet Normalization Parameters
+        normalize = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406], 
+            std=[0.229, 0.224, 0.225]
+        )
 
-        self.samples: List[Tuple[Path, int]] = []
-
-        # 1. CSV 로드
-        with self.csv_path.open("r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                raw_face_path = Path(row["face_path"])
-
-                # 절대 경로로 변환
-                if not raw_face_path.is_absolute():
-                    face_path = PROJECT_ROOT / raw_face_path
-                else:
-                    face_path = raw_face_path
-
-                label = int(row["label"])
-                self.samples.append((face_path, label))
-
-        # 2. 이미지 변환(Transform) 정의
-        if train:
-            # 학습용: Augmentation 적용
-            self.transform = transforms.Compose(
-                [
-                    transforms.Resize((224, 224)),
-                    transforms.RandomHorizontalFlip(p=0.5),
-                    transforms.RandomRotation(10),
-                    transforms.ToTensor(),
-                    # ImageNet 표준 정규화
-                    transforms.Normalize(
-                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                    ),
-                ]
-            )
+        if self.train:
+            # Robust Augmentation Suite to handle compressed DFDC environments
+            self.transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.RandomHorizontalFlip(p=0.5),
+                # 1. Color Jittering (Enhances variance for dynamic lighting)
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+                # 2. Random Rotation (Compensates for head tilt deviations)
+                transforms.RandomRotation(15),
+                transforms.ToTensor(),
+                normalize,
+                # 3. Random Erasing (Forces attention to micro-textures rather than whole ROI - AUC Optimizer)
+                transforms.RandomErasing(p=0.3, scale=(0.02, 0.2), ratio=(0.3, 3.3), value=0)
+            ])
         else:
-            # 검증/테스트용: 기본 변환만 적용
-            self.transform = transforms.Compose(
-                [
-                    transforms.Resize((224, 224)),
-                    transforms.ToTensor(),
-                    transforms.Normalize(
-                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                    ),
-                ]
-            )
+            self.transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                normalize
+            ])
 
-    def __len__(self):
-        return len(self.samples)
+    def __len__(self) -> int:
+        return len(self.data)
 
-    def __getitem__(self, idx: int):
-        face_path, label = self.samples[idx]
+    def __getitem__(self, idx: int) -> tuple:
+        # 1. Parse raw path from csv metadata
+        raw_path = str(self.data.iloc[idx]['image_path'])
+        
+        # 2. Standardize OS path separators to POSIX standard (Linux/Mac/Colab compatible)
+        clean_path = raw_path.replace('\\', '/')
+        
+        # 3. 🚀 Environment Agnostic Path Resolution (Handles Colab Local, Drive, or Native Environments)
+        if 'dataset/' in clean_path:
+            relative_target = clean_path.split('dataset/')[-1]
+            
+            # Setup dynamic fallbacks based on runtime environment existence
+            local_candidate = Path(f"/content/dataset/{relative_target}")
+            drive_candidate = Path(f"/content/drive/MyDrive/TruthLens-Model/dataset/{relative_target}")
+            native_candidate = Path("dataset") / relative_target
+            
+            if local_candidate.exists():
+                img_path = local_candidate
+            elif drive_candidate.exists():
+                img_path = drive_candidate
+            else:
+                img_path = native_candidate  # Defaults to relative project path for local/server users
+        else:
+            img_path = Path(clean_path)
 
-        # 이미지 로드
+        label = int(self.data.iloc[idx]['label'])
+    
         try:
-            img = Image.open(face_path).convert("RGB")
-        except Exception as e:
-            print(f"Error loading image {face_path}: {e}")
-            return self.__getitem__(0)  # 에러 시 0번 인덱스로 대체
-
-        # 변환 적용
-        x = self.transform(img)
-
-        # 라벨 텐서 변환
-        y = torch.tensor(label, dtype=torch.long)
-
-        return x, y
+            image = Image.open(img_path).convert("RGB")
+        except Exception:
+            # Graceful Fallback: Generate a black dummy image if stream is corrupted or missing
+            image = Image.new('RGB', (224, 224), (0, 0, 0))
+        
+        return self.transform(image), label

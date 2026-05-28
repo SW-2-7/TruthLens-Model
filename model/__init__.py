@@ -1,12 +1,13 @@
 # model/__init__.py
 
-from .config import MODEL_LIST, DEFAULT_MODEL_NAME
-from .inference import load_model, predict_from_pil, predict_from_path
+from .config import DEFAULT_MODEL_NAME, MODEL_LIST
+from .inference import DeepfakeDetector
+from .model import create_model
 
+# 외부 노출 인터페이스 정의
 __all__ = [
-    "load_model",
-    "predict_from_pil",
-    "predict_from_path",
     "MODEL_LIST",
     "DEFAULT_MODEL_NAME",
+    "create_model",
+    "DeepfakeDetector",
 ]
