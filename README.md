@@ -20,10 +20,14 @@ project_root/
 │
 ├── model/                     # 📂 AI Model Definition & Inference Interface
 │   ├── __init__.py            # Package interface initialization
-│   ├── config.py              # Model metadata and weights path configurations
+│   ├── config.py              # Model metadata, weights path, ensemble config
 │   ├── inference.py           # End-to-end unified inference API bridge
 │   ├── model.py               # Core backbone architectures (EffB0 / MobV3 Builder)
-│   └── preprocess.py          # Standardized ImageNet pre-processing utilities
+│   ├── pipeline.py            # 백엔드용 앙상블 파이프라인 (최종 연동 인터페이스)
+│   ├── face_detectors.py      # MTCNN / InsightFace / Haar 얼굴 탐지기
+│   ├── preprocess.py          # Standardized ImageNet pre-processing utilities
+│   └── weights/
+│       └── eff_b0_finetuned.pth   # 파인튜닝 EfficientNet-B0 (AUC 0.8016)
 │
 ├── src/                       # 📂 Core Execution Pipelines & Data Components
 │   ├── build_index.py         # Video-to-frame extraction & 8:1:1 split manager
@@ -136,39 +140,54 @@ python -m src.evaluate_ensemble --trained-domain dfdc --target-domain dfdc --bat
 
 ---
 
-## 💻 Backend Integration Guide (`model/inference.py`)
+## 💻 Backend Integration Guide (`model/pipeline.py`)
 
-백엔드 엔지니어 및 타 파트 개발자는 내부 아키텍처나 전처리 과정을 깊게 파고들 필요 없이, `DeepfakeDetector` 인터페이스 클래스 단 **3줄 호출**만으로 정밀한 딥페이크 판별 기능을 서비스 시스템에 연동할 수 있습니다.
+백엔드 엔지니어 및 타 파트 개발자는 내부 아키텍처나 전처리 과정을 깊게 파고들 필요 없이, `DeepfakeDetectionPipeline` 클래스 단 **3줄 호출**만으로 정밀한 딥페이크 판별 기능을 서비스 시스템에 연동할 수 있습니다.
+
+> **최종 앙상블**: `EfficientNet-B0 파인튜닝 (×0.8)` + `MobileNetV3-DFDC (×0.2)` — AUC **0.8016** (DeepFake-Eval-2024)
 
 ```python
-from model.inference import DeepfakeDetector
+from PIL import Image
+from model.pipeline import DeepfakeDetectionPipeline
 
-# 1. Initialize the detector (Automatically detects and allocates CUDA/GPU if available)
-detector = DeepfakeDetector()
+# 1. 파이프라인 초기화 (서버 시작 시 1회만 — CUDA/GPU 자동 감지)
+pipeline = DeepfakeDetectionPipeline()
 
-# 2. Run inference pipeline (Executes MTCNN face crop -> Ensemble predicting)
-result = detector.predict("path/to/target_user_image.jpg")
+# 2. PIL 이미지를 넣으면 MTCNN 얼굴 크롭 → 앙상블 추론 자동 실행
+img    = Image.open("path/to/target_user_image.jpg")
+result = pipeline.run(img)
 
-# 3. Utilize the structural JSON response
-if result["status"] == "success":
-    print(f"Prediction Result : {result['label']}")  # REAL or FAKE
-    print(f"Confidence Score  : {result['score']}%")  # Fake probability (0.0% ~ 100.0%)
+# 3. 응답 처리
+if result["success"]:
+    print(f"판별 결과  : {result['label']}")            # REAL or FAKE
+    print(f"위조 확률  : {result['fake_probability']}")  # 0.0 ~ 1.0
+    print(f"신뢰도     : {result['confidence']}")        # low / medium / high
+else:
+    print(f"오류: {result['message']}")                  # 얼굴 미탐지 등
 
 ```
 
 ### API Response Format (JSON)
 
+**성공 시**
 ```json
 {
-  "status": "success",
+  "success": true,
   "label": "FAKE",
-  "score": 94.65,
-  "details": {
-    "efficientnet_b0": 0.9550,
-    "mobilenet_v3": 0.9125
-  }
+  "fake_probability": 0.9465,
+  "real_probability": 0.0535,
+  "confidence": "high",
+  "confidence_score": 0.8930
 }
+```
 
+**얼굴 탐지 실패 시**
+```json
+{
+  "success": false,
+  "error": "no_face",
+  "message": "얼굴을 찾을 수 없습니다. 얼굴이 잘 보이는 사진을 올려주세요."
+}
 ```
 
 ---
