@@ -1,0 +1,69 @@
+{
+  "arch": "efficientnet_b0",
+  "base_weights": "C:\\Users\\User\\model\\TruthLens-Model\\add\\dfdc_efficientnet_b0_focal.pth",
+  "output_path": "C:\\Users\\User\\model\\TruthLens-Model\\model\\weights\\eff_b0_finetuned.pth",
+  "dataset": "C:\\Users\\User\\model\\TruthLens-Model\\data\\deepfake_eval_2024",
+  "best_val_auc": 0.6731208545090985,
+  "best_val_acc": 0.6271950271950272,
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.6734,
+      "train_acc": 0.6003,
+      "val_loss": 0.669,
+      "val_acc": 0.6016,
+      "val_auc": 0.6452,
+      "lr": 9e-05,
+      "elapsed_sec": 74.3
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.5247,
+      "train_acc": 0.7963,
+      "val_loss": 0.6774,
+      "val_acc": 0.6266,
+      "val_auc": 0.6688,
+      "lr": 6.5e-05,
+      "elapsed_sec": 25.7
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.4412,
+      "train_acc": 0.8522,
+      "val_loss": 0.7022,
+      "val_acc": 0.6272,
+      "val_auc": 0.6731,
+      "lr": 3.5e-05,
+      "elapsed_sec": 25.7
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.3941,
+      "train_acc": 0.8839,
+      "val_loss": 0.7084,
+      "val_acc": 0.6258,
+      "val_auc": 0.672,
+      "lr": 1e-05,
+      "elapsed_sec": 26.1
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.3758,
+      "train_acc": 0.8953,
+      "val_loss": 0.7091,
+      "val_acc": 0.6331,
+      "val_auc": 0.6726,
+      "lr": 0.0,
+      "elapsed_sec": 24.7
+    }
+  ],
+  "args": {
+    "epochs": 5,
+    "batch_size": 32,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "label_smoothing": 0.1,
+    "frames_per_video": 8,
+    "max_train": 200
+  }
+}
