@@ -1,197 +1,162 @@
-# src/build_index.py
+# build_index.py
 
 from pathlib import Path
-import csv
+import os
 import random
-import argparse
-from tqdm import tqdm
-from sklearn.model_selection import train_test_split  # 분할을 위해 설치 필요
+import cv2
+import pandas as pd
 
-from .paths import PROJECT_ROOT
-
-# 랜덤 시드 고정 (분할 결과의 재현성을 위해)
+# ============================================
+# 1. Global Configurations & Environment
+# ============================================
 SEED = 42
 random.seed(SEED)
 
-# ============================================
-# 유틸 함수 1: 라벨 추출 (FF++ 및 Celeb-DF 모두 커버)
-# ============================================
+# Define dataset hierarchy paths
+BASE_DATA_DIR = Path.cwd() / "dataset"
+DATA_DIRS = {
+    "celebdf": {
+        "real": BASE_DATA_DIR / "Celeb_real_face_only",
+        "fake": BASE_DATA_DIR / "Celeb_fake_face_only",
+    },
+    "dfdc": {
+        "real": BASE_DATA_DIR / "DFDC_REAL_Face_only_data",
+        "fake": BASE_DATA_DIR / "DFDC_FAKE_Face_only_data",
+    },
+}
 
-
-def get_label_from_path(video_path: str) -> int:
-    """
-    영상 경로를 분석하여 딥페이크 레이블 (0: Real, 1: Fake)을 결정합니다.
-    (FF++의 'original' 폴더명 또는 Celeb-DF의 'Celeb-real' 폴더명으로 판단)
-    """
-    p = Path(video_path)
-    parts = [s.lower() for s in p.parts]
-
-    # 'original' (FF++) 또는 'celeb-real' (Celeb-DF)이 포함되면 Real (0)
-    if "original" in parts or "celeb-real" in parts or "youtube-real" in parts:
-        return 0  # Real
-
-    # 'Deepfakes', 'FaceSwap', 'Celeb-synthesis' 등이 포함되면 Fake (1)
-    return 1  # Fake
-
-
-def group_by_video(faces_rows):
-    """얼굴 행들을 영상 단위로 그룹화합니다."""
-    by_video = {}
-
-    for row in faces_rows:
-        video_path = row["video_path"]
-
-        if video_path not in by_video:
-            # get_label_from_path 함수를 사용해 라벨을 결정
-            label = get_label_from_path(video_path)
-            by_video[video_path] = {"label": label, "rows": []}
-
-        by_video[video_path]["rows"].append(row)
-
-    return by_video
+# Train : Validation : Test Split Ratio (8:1:1)
+TRAIN_RATIO = 0.8
+VAL_RATIO = 0.1
 
 
 # ============================================
-# 유틸 함수 2: 영상 단위 분할 (80:10:10)
+# 2. Video Processing Pipeline
 # ============================================
-
-
-def split_videos(video_paths, train_ratio=0.8, val_ratio=0.1):
-    """영상 단위로 train / val / test 분할 (Stratify 없이 단순 랜덤 분할)"""
-
-    video_paths = list(video_paths)
-
-    # scikit-learn의 train_test_split을 사용하여 분할
-    # 1차 분리: Test set 분리
-    train_val_v, test_v = train_test_split(
-        video_paths, test_size=val_ratio, random_state=SEED
-    )
-
-    # 2차 분리: Train set과 Validation set 분리
-    val_size = val_ratio / (train_ratio + val_ratio)  # 예: 0.1 / 0.9 = 0.111...
-    train_v, val_v = train_test_split(
-        train_val_v, test_size=val_size, random_state=SEED
-    )
-
-    return set(train_v), set(val_v), set(test_v)
-
-
-def write_csv(path: Path, rows, fieldnames):
-    """주어진 rows 리스트를 path 위치의 CSV 파일로 저장"""
-
-    if not rows:
+def extract_frames_from_video(video_path: Path, num_frames: int = 5) -> None:
+    """Extracts a fixed number of evenly spaced frames from a video file."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return
+    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames <= 0:
+        cap.release()
         return
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    step = max(1, total_frames // num_frames)
+    count = 0
+    
+    for i in range(0, total_frames, step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ret, frame = cap.read()
+        
+        if ret:
+            save_path = video_path.parent / f"{video_path.stem}_frame{count}.jpg"
+            # Optimization: Skip extraction if the frame target already exists
+            if not save_path.exists():
+                cv2.imwrite(str(save_path), frame)
+            count += 1
+            if count >= num_frames:
+                break
+                
+    cap.release()
 
 
 # ============================================
-# 메인 처리 로직
+# 3. Data Indexing & Split Utilities
 # ============================================
+def get_image_paths(folder_path: Path) -> list:
+    """Gathers all image paths within a folder matching specific extension formats."""
+    if not folder_path.exists():
+        print(f"[Warning] Directory target not found: {folder_path.name}")
+        return []
+
+    valid_extensions = (".png", ".jpg", ".jpeg")
+    paths = [
+        str(p) for p in folder_path.rglob("*.*") 
+        if p.suffix.lower() in valid_extensions
+    ]
+    print(f"  -> Found {len(paths)} images inside '{folder_path.name}'")
+    return paths
 
 
-def run_indexing(input_csv, output_prefix):
-
-    FACES_CSV = Path(input_csv)
-    OUTPUT_PREFIX = Path(output_prefix)
-
-    # 1. faces_csv 읽기 (이전에 extract_faces.py가 생성한 CSV)
-    faces_rows = []
-    with FACES_CSV.open("r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in tqdm(reader, desc=f"Loading faces from {FACES_CSV.name}"):
-            faces_rows.append(row)
-
-    print(f"[INFO] Loaded {len(faces_rows)} face rows")
-
-    # 2. 영상단위로 그룹화 및 분할
-    by_video = group_by_video(faces_rows)
-    video_paths = list(by_video.keys())
-
-    train_v, val_v, test_v = split_videos(video_paths)
-
-    # 3. 각 row에 라벨 및 split 정보 추가
-    all_rows = []
-    train_rows, val_rows, test_rows = [], [], []
-
-    for video_path, info in by_video.items():
-        # ... (split 정보 추가 및 row 할당 로직은 유지) ...
-
-        if video_path in train_v:
-            split = "train"
-            target_list = train_rows
-        elif video_path in val_v:
-            split = "val"
-            target_list = val_rows
-        else:
-            split = "test"
-            target_list = test_rows
-
-        for row in info["rows"]:
-            new_row = dict(row)
-            new_row["label"] = info[
-                "label"
-            ]  # 이미 get_label_from_path에서 정해진 라벨 사용
-            new_row["split"] = split
-
-            all_rows.append(new_row)
-            target_list.append(new_row)
-
-    # 4. CSV 저장
-    fieldnames = (
-        list(all_rows[0].keys())
-        if all_rows
-        else ["video_path", "frame_path", "face_path", "label", "split"]
-    )
-
-    write_csv(
-        OUTPUT_PREFIX.parent / (OUTPUT_PREFIX.name + "_all.csv"), all_rows, fieldnames
-    )
-    write_csv(
-        OUTPUT_PREFIX.parent / (OUTPUT_PREFIX.name + "_train.csv"),
-        train_rows,
-        fieldnames,
-    )
-    write_csv(
-        OUTPUT_PREFIX.parent / (OUTPUT_PREFIX.name + "_val.csv"), val_rows, fieldnames
-    )
-    write_csv(
-        OUTPUT_PREFIX.parent / (OUTPUT_PREFIX.name + "_test.csv"), test_rows, fieldnames
-    )
-
-    print(
-        f"[DONE] Saved indices. Train: {len(train_rows)}, Val: {len(val_rows)}, Test: {len(test_rows)}"
-    )
+def split_by_ratio(data_list: list) -> tuple:
+    """Splits an input dataset list into Train, Validation, and Test subsets."""
+    total = len(data_list)
+    train_end = int(total * TRAIN_RATIO)
+    val_end = train_end + int(total * VAL_RATIO)
+    return data_list[:train_end], data_list[train_end:val_end], data_list[val_end:]
 
 
+# ============================================
+# 4. Main Executive Engine
+# ============================================
 def main():
-    # 🚨 [추가] 명령줄 인자를 처리하는 로직
-    parser = argparse.ArgumentParser(
-        description="Creates train/val/test splits at the video level for any dataset."
-    )
-    # 인자 정의
-    parser.add_argument(
-        "--input-csv",
-        type=str,
-        required=True,
-        help="Input CSV containing cropped face paths (e.g., data/processed/indices/faces_ffpp.csv)",
-    )
-    parser.add_argument(
-        "--output-prefix",
-        type=str,
-        required=True,
-        help="Base path and prefix for output CSVs (e.g., data/processed/indices/ffpp)",
-    )
+    # --- STEP 1: Video-to-Frame Data Generation ---
+    print("🚀 [Step 1] Initiating Video-to-JPG Frame Extraction...")
+    for domain, folders in DATA_DIRS.items():
+        for label_type in ["real", "fake"]:
+            folder = folders[label_type]
+            if not folder.exists(): 
+                continue
+            
+            mp4_files = list(folder.rglob("*.mp4"))
+            if mp4_files:
+                print(f"📁 Processing [{folder.name}] -> Found {len(mp4_files)} videos.")
+                for idx, mp4_path in enumerate(mp4_files):
+                    extract_frames_from_video(mp4_path, num_frames=5)
+                    if (idx + 1) % 100 == 0:
+                        print(f"  - Progress: {idx + 1}/{len(mp4_files)} video streams complete.")
 
-    args = parser.parse_args()
+    # --- STEP 2: Dataset Auditing & CSV Generation ---
+    print("\n🚀 [Step 2] Splitting Datasets & Generating Index CSV Files...")
+    if not BASE_DATA_DIR.exists():
+        print(f"[Error] Target base path {BASE_DATA_DIR} does not exist.")
+        return
 
-    # run_indexing 함수 호출
-    run_indexing(args.input_csv, args.output_prefix)
+    for domain_name, paths in DATA_DIRS.items():
+        print(f"\nIndexing Domain Suite: [{domain_name.upper()}]")
+        real_images = get_image_paths(paths["real"])
+        fake_images = get_image_paths(paths["fake"])
+
+        if not real_images and not fake_images:
+            print(f"  - [Notice] No image payloads found for domain: {domain_name}")
+            continue
+
+        # Shuffle lists to avoid sequential cluster dependency bias
+        random.shuffle(real_images)
+        random.shuffle(fake_images)
+
+        r_tr, r_val, r_te = split_by_ratio(real_images)
+        f_tr, f_val, f_te = split_by_ratio(fake_images)
+
+        splits = {
+            "train": (r_tr, f_tr), 
+            "val": (r_val, f_val), 
+            "test": (r_te, f_te)
+        }
+
+        for split_name, (r_list, f_list) in splits.items():
+            data = []
+            # Mapping Target -> REAL: 0, FAKE: 1
+            for img in r_list: 
+                data.append({"image_path": img, "label": 0, "domain": domain_name})
+            for img in f_list: 
+                data.append({"image_path": img, "label": 1, "domain": domain_name})
+
+            df = pd.DataFrame(data)
+            if df.empty:
+                print(f"  - [Warning] Split bucket '{split_name}' has insufficient data volume.")
+                continue
+
+            # Full shuffle before flattening to disk
+            df = df.sample(frac=1, random_state=SEED).reset_index(drop=True)
+            csv_filename = BASE_DATA_DIR / f"{domain_name}_{split_name}.csv"
+            df.to_csv(csv_filename, index=False)
+            print(f"  - Generated Index Metafile: {csv_filename.name} (Total: {len(df)} images)")
+
+    print("\n✅ All data pipelines executed successfully! Environment ready for training.")
 
 
 if __name__ == "__main__":

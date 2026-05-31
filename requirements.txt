@@ -1,7 +1,21 @@
+# ====================================================================
+# TruthLens: Deepfake Detection System Dependencies
+# ====================================================================
+
+# 1. Core Deep Learning & Computer Vision Frameworks
 torch
 torchvision
+facenet-pytorch
+
+# 2. Image & Video Processing Libraries
 opencv-python
 pillow
-tqdm
+
+# 3. Data Engineering & Analysis Utilities
 numpy
+pandas
 scikit-learn
+
+# 4. User Interface & Progress Dashboards
+matplotlib
+tqdm
